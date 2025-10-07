@@ -197,7 +197,7 @@ async def upload_claims(
         
         # Validate required columns
         required_columns = [
-            'claim_id', 'encounter_type', 'service_date', 'national_id',
+            'unique_id', 'encounter_type', 'service_date', 'national_id',
             'member_id', 'facility_id', 'unique_id', 'diagnosis_codes',
             'service_code', 'paid_amount_aed', 'approval_number'
         ]
@@ -213,7 +213,7 @@ async def upload_claims(
         claims_data = []
         for _, row in df.iterrows():
             claim = {
-                "claim_id": str(row['claim_id']),
+                "unique_id": str(row['unique_id']),
                 "encounter_type": str(row['encounter_type']),
                 "service_date": str(row['service_date']),
                 "national_id": str(row['national_id']),

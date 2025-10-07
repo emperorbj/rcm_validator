@@ -33,9 +33,13 @@ class PineconeService:
     async def upsert_claims(self, claims: List[Dict[str, Any]]):
         vectors = []
         for claim in claims:
-            text = f"{claim.get('claim_id', '')} {claim.get('service_code', '')} {' '.join(claim.get('diagnosis_codes', []))}"
+            text = f"{claim.get('unique_id', '')} {claim.get('service_code', '')} {' '.join(claim.get('diagnosis_codes', []))}"
             embedding = self.embedder.encode(text).tolist()
-            vectors.append((claim["claim_id"], embedding, {"tenant_id": claim.get("tenant_id", "default")}))
+            vectors.append((claim["unique_id"], embedding, {"tenant_id": claim.get("tenant_id", "default")}))
+
+            # text = f"{claim.get('unique_id', '')} {claim.get('service_code', '')} {' '.join(claim.get('diagnosis_codes', []))}"
+            # embedding = self.embedder.encode(text).tolist()
+            # vectors.append((claim["unique_id"], embedding, {"tenant_id": claim.get("tenant_id", "default")}))
 
         # Upsert into index
         self.index.upsert(vectors=vectors)
@@ -49,5 +53,5 @@ class PineconeService:
         res = self.index.query(**query_params)
         return res.matches
 
-    def delete_claims(self, claim_ids: List[str]):
-        self.index.delete(ids=claim_ids)
+    def delete_claims(self, unique_ids: List[str]):
+        self.index.delete(ids=unique_ids)

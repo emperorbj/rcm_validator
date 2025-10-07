@@ -49,7 +49,7 @@ class MongoDB:
         """Create database indexes for optimal performance"""
         # Claims master collection indexes
         await self.database.claims_master.create_index([
-            ("tenant_id", 1), ("claim_id", 1)
+            ("tenant_id", 1), ("unique_id", 1)
         ], unique=True)
         await self.database.claims_master.create_index([
             ("tenant_id", 1), ("status", 1)
@@ -75,7 +75,7 @@ class MongoDB:
             result = await self.database.claims_master.insert_many(claims)
             return result
         except DuplicateKeyError as e:
-            # Handle duplicate claim_id for same tenant
+            # Handle duplicate unique_id for same tenant
             raise ValueError(f"Duplicate claim IDs found: {e}")
     
     async def get_claims_by_tenant(
@@ -118,13 +118,13 @@ class MongoDB:
     
     async def update_claim_validation(
         self, 
-        claim_id: str, 
+        unique_id: str, 
         tenant_id: str, 
         validation_result: Dict[str, Any]
     ):
         """Update claim with validation results"""
         result = await self.database.claims_master.update_one(
-            {"claim_id": claim_id, "tenant_id": tenant_id},
+            {"unique_id": unique_id, "tenant_id": tenant_id},
             {
                 "$set": {
                     "status": validation_result["status"],
@@ -143,7 +143,7 @@ class MongoDB:
         for update in updates:
             operations.append({
                 "filter": {
-                    "claim_id": update["claim_id"],
+                    "unique_id": update["unique_id"],
                     "tenant_id": update["tenant_id"]
                 },
                 "update": {

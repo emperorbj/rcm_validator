@@ -211,7 +211,7 @@ class RuleEngine:
             )
         
         return ValidationResult(
-            claim_id=claim.claim_id,
+            unique_id=claim.unique_id,
             status=status,
             error_type=error_type,
             error_explanation=all_errors,

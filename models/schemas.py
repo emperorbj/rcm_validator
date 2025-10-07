@@ -31,7 +31,7 @@ class UserResponse(BaseModel):
 
 # Core Claim Model
 class ClaimRecord(BaseModel):
-    claim_id: str = Field(..., description="Unique claim identifier")
+    unique_id: str = Field(..., description="Unique claim identifier")
     encounter_type: EncounterType = Field(..., description="Type of medical encounter")
     service_date: str = Field(..., description="Date of service")
     national_id: str = Field(..., description="Patient national ID")
@@ -75,7 +75,7 @@ class ClaimRecord(BaseModel):
         return [code.strip() for code in v if code.strip()]
 
 class ValidationResult(BaseModel):
-    claim_id: str
+    unique_id: str
     status: StatusType
     error_type: ErrorType
     error_explanation: List[str]
@@ -86,7 +86,7 @@ class ValidationResult(BaseModel):
 # Request/Response Models
 class ValidationRequest(BaseModel):
     tenant_id: str = "default"
-    claim_ids: Optional[List[str]] = None  # If None, validate all pending claims
+    unique_ids: Optional[List[str]] = None  # If None, validate all pending claims
 
 class ValidationResponse(BaseModel):
     message: str
@@ -220,7 +220,7 @@ class LLMEvaluationRequest(BaseModel):
     evaluation_type: str  # "medical" or "technical"
 
 class LLMEvaluationResponse(BaseModel):
-    claim_id: str
+    unique_id: str
     evaluation_type: str
     has_errors: bool
     errors_found: List[str]

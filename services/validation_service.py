@@ -11,10 +11,6 @@ from database.mongodb import MongoDB
 from services.rule_engine import RuleEngine
 from services.llm_service import LLMService
 from models.schemas import ClaimRecord, ValidationResult, ErrorType, StatusType
-
-
-
-
 class ValidationService:
     def __init__(self, db: MongoDB, rule_engine: RuleEngine):
         self.db = db
@@ -127,10 +123,10 @@ class ValidationService:
                 results.append(combined_result)
                 
             except Exception as e:
-                print(f"Error processing claim {claim_data.get('claim_id', 'unknown')}: {str(e)}")
+                print(f"Error processing claim {claim_data.get('unique_id', 'unknown')}: {str(e)}")
                 # Create a failed validation result
                 results.append(ValidationResult(
-                    claim_id=str(claim_data.get('claim_id', 'unknown')),
+                    unique_id=str(claim_data.get('unique_id', 'unknown')),
                     status=StatusType.NOT_VALIDATED,
                     error_type=ErrorType.TECHNICAL_ERROR,
                     error_explanation=[f"Processing error: {str(e)}"],
@@ -160,7 +156,7 @@ class ValidationService:
             return llm_response
             
         except Exception as e:
-            print(f"LLM validation failed for claim {claim.claim_id}: {str(e)}")
+            print(f"LLM validation failed for claim {claim.unique_id}: {str(e)}")
             # Return empty result if LLM fails
             return {
                 "has_additional_errors": False,
@@ -196,7 +192,7 @@ class ValidationService:
         """Prepare claim context for LLM evaluation"""
         return f"""
 CLAIM DETAILS:
-- Claim ID: {claim.claim_id}
+- Claim ID: {claim.unique_id}
 - Encounter Type: {claim.encounter_type}
 - Service Code: {claim.service_code}
 - Diagnosis Codes: {', '.join(claim.diagnosis_codes)}
@@ -242,7 +238,7 @@ CLAIM DETAILS:
             recommended_action += f"; {llm_result['recommended_action']}"
         
         return ValidationResult(
-            claim_id=claim.claim_id,
+            unique_id=claim.unique_id,
             status=final_status,
             error_type=final_error_type,
             error_explanation=combined_errors,
@@ -257,7 +253,7 @@ CLAIM DETAILS:
         for result in validation_results:
             operations.append(
                 UpdateOne(
-                    {"claim_id": result.claim_id, "tenant_id": tenant_id},
+                    {"unique_id": result.unique_id, "tenant_id": tenant_id},
                     {
                         "$set": {
                             "status": result.status.value,
@@ -290,7 +286,7 @@ CLAIM DETAILS:
                 diagnosis_codes = [code.strip() for code in diagnosis_codes.split(',') if code.strip()]
             
             return ClaimRecord(
-                claim_id=str(claim_dict.get("claim_id")),
+                unique_id=str(claim_dict.get("unique_id")),
                 encounter_type=claim_dict.get("encounter_type"),
                 service_date=claim_dict.get("service_date"),
                 national_id=claim_dict.get("national_id"),
