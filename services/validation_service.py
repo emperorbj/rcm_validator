@@ -292,7 +292,6 @@ CLAIM DETAILS:
                 national_id=claim_dict.get("national_id"),
                 member_id=claim_dict.get("member_id"),
                 facility_id=claim_dict.get("facility_id"),
-                unique_id=unique_id,
                 diagnosis_codes=diagnosis_codes,
                 service_code=claim_dict.get("service_code"),
                 paid_amount_aed=float(claim_dict.get("paid_amount_aed", 0)),
