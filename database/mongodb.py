@@ -11,7 +11,6 @@ class MongoDB:
         # MongoDB connection string - use environment variable
         self.connection_string = os.getenv(
             "MONGO_URI", 
-            "mongodb+srv://username:password@cluster.mongodb.net/rcm_engine?retryWrites=true&w=majority"
         )
         self.client = None
         self.database = None
