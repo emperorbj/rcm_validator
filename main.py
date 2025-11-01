@@ -167,37 +167,56 @@ async def upload_rules(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Rules upload failed: {str(e)}")
+    
+# main.py - REPLACE the upload_claims endpoint (around line 180)
 
 
+# Replace the /upload/claims endpoint in main.py with this version
 
-# In main.py, update the upload_claims endpoint:
 @app.post("/upload/claims")
 async def upload_claims(
     file: UploadFile = File(...),
     tenant_id: str = Form("default"),
     current_user: str = Depends(verify_token)
 ):
-    """Upload and process claims file"""
+    """Upload and process claims file (CSV, XLS, XLSX) - FIXED VERSION"""
     try:
         # Validate file type
-        if not file.filename.endswith(('.csv', '.xlsx', '.xls')):
+        filename_lower = file.filename.lower()
+        if not (filename_lower.endswith('.csv') or filename_lower.endswith('.xlsx') or filename_lower.endswith('.xls')):
             raise HTTPException(
                 status_code=400, 
-                detail="Only CSV and Excel files are supported"
+                detail="Only CSV, XLS, and XLSX files are supported"
             )
         
         # Read file content
         content = await file.read()
         
+        # Validate file size (10MB limit)
+        max_size = 10 * 1024 * 1024  # 10MB
+        if len(content) > max_size:
+            raise HTTPException(
+                status_code=400,
+                detail="File size exceeds 10MB limit"
+            )
+        
         # Parse file based on type
-        if file.filename.endswith('.csv'):
-            df = pd.read_csv(BytesIO(content))
-        else:
-            df = pd.read_excel(BytesIO(content))
+        try:
+            if filename_lower.endswith('.csv'):
+                df = pd.read_csv(BytesIO(content))
+            elif filename_lower.endswith('.xlsx'):
+                df = pd.read_excel(BytesIO(content), engine='openpyxl')
+            elif filename_lower.endswith('.xls'):
+                df = pd.read_excel(BytesIO(content), engine='xlrd')
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Error parsing file: {str(e)}"
+            )
         
         # Validate required columns
         required_columns = [
-            'unique_id', 'encounter_type', 'service_date', 'national_id',
+            'claim_id', 'encounter_type', 'service_date', 'national_id',
             'member_id', 'facility_id', 'unique_id', 'diagnosis_codes',
             'service_code', 'paid_amount_aed', 'approval_number'
         ]
@@ -206,45 +225,265 @@ async def upload_claims(
         if missing_columns:
             raise HTTPException(
                 status_code=400,
-                detail=f"Missing required columns: {missing_columns}"
+                detail=f"Missing required columns: {', '.join(missing_columns)}"
             )
+        
+        # ✅ FIX: Helper function to normalize unique_id
+        def normalize_unique_id(uid: str) -> str:
+            """Convert any format to XXXX-XXXX-XXXX uppercase"""
+            if not uid or pd.isna(uid):
+                return ""
+            
+            # Convert to string and uppercase
+            uid = str(uid).upper().replace('-', '').replace(' ', '')
+            
+            # Validate length
+            if len(uid) != 12:
+                raise ValueError(f"unique_id must be 12 characters, got {len(uid)}: {uid}")
+            
+            # Format as XXXX-XXXX-XXXX
+            return f"{uid[0:4]}-{uid[4:8]}-{uid[8:12]}"
         
         # Convert to records and store in master table
         claims_data = []
-        for _, row in df.iterrows():
-            claim = {
-                "unique_id": str(row['unique_id']),
-                "encounter_type": str(row['encounter_type']),
-                "service_date": str(row['service_date']),
-                "national_id": str(row['national_id']),
-                "member_id": str(row['member_id']),
-                "facility_id": str(row['facility_id']),
-                "unique_id": str(row['unique_id']),
-                "diagnosis_codes": str(row['diagnosis_codes']).split(',') if pd.notna(row['diagnosis_codes']) else [],
-                "service_code": str(row['service_code']),
-                "paid_amount_aed": float(row['paid_amount_aed']),
-                "approval_number": str(row['approval_number']) if pd.notna(row['approval_number']) else "",
+        skipped_rows = []
+        
+        for idx, row in df.iterrows():
+            try:
+                # ✅ FIX: Normalize unique_id BEFORE inserting
+                try:
+                    normalized_unique_id = normalize_unique_id(row['unique_id'])
+                except ValueError as e:
+                    skipped_rows.append(f"Row {idx + 2}: {str(e)}")
+                    continue
+                
+                # Handle diagnosis codes (semicolon or comma separated)
+                diagnosis_codes_str = str(row['diagnosis_codes']) if pd.notna(row['diagnosis_codes']) else ""
+                if diagnosis_codes_str:
+                    # Replace semicolons with commas, then split
+                    diagnosis_codes = [
+                        code.strip().upper()  # ✅ FIX: Normalize to uppercase
+                        for code in diagnosis_codes_str.replace(';', ',').split(',') 
+                        if code.strip()
+                    ]
+                else:
+                    diagnosis_codes = []
+                
+                # Handle approval number (normalize NA values)
+                approval_number = str(row['approval_number']) if pd.notna(row['approval_number']) else ""
+                if approval_number.upper() in ['NA', 'N/A', 'NAN', 'NONE', 'NULL']:
+                    approval_number = ""
+                
+                # ✅ FIX: Normalize all ID fields to uppercase
+                claim = {
+                    "claim_id": str(row['claim_id']).strip(),
+                    "unique_id": normalized_unique_id,  # ✅ Already normalized
+                    "encounter_type": str(row['encounter_type']).strip().upper(),
+                    "service_date": str(row['service_date']),
+                    "national_id": str(row['national_id']).strip().upper(),  # ✅ Uppercase
+                    "member_id": str(row['member_id']).strip().upper(),  # ✅ Uppercase
+                    "facility_id": str(row['facility_id']).strip().upper(),  # ✅ Uppercase
+                    "diagnosis_codes": diagnosis_codes,  # ✅ Already uppercase
+                    "service_code": str(row['service_code']).strip().upper(),  # ✅ Uppercase
+                    "paid_amount_aed": float(row['paid_amount_aed']),
+                    "approval_number": approval_number.strip().upper() if approval_number else "",  # ✅ Uppercase
+                    "tenant_id": tenant_id,
+                    "uploaded_at": datetime.utcnow(),
+                    "status": "Pending",
+                    "error_type": "No error",
+                    "error_explanation": [],
+                    "recommended_action": ""
+                }
+                claims_data.append(claim)
+                
+            except Exception as e:
+                skipped_rows.append(f"Row {idx + 2}: {str(e)}")
+                continue
+        
+        if not claims_data:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No valid claims found in file. Errors: {'; '.join(skipped_rows[:5])}"
+            )
+        
+        # Store in database
+        try:
+            result = await db.insert_many_claims(claims_data)
+            
+            response_data = {
+                "message": "Claims uploaded successfully",
+                "claims_count": len(claims_data),
                 "tenant_id": tenant_id,
-                "uploaded_at": datetime.utcnow(),
-                "status": "Pending",
-                "error_type": "No error",
-                "error_explanation": [],
-                "recommended_action": ""
+                "filename": file.filename,
+                "file_type": filename_lower.split('.')[-1].upper()
             }
-            claims_data.append(claim)
+            
+            # Add warning if rows were skipped
+            if skipped_rows:
+                response_data["warnings"] = {
+                    "skipped_rows": len(skipped_rows),
+                    "errors": skipped_rows[:10]  # Show first 10 errors
+                }
+            
+            return response_data
+            
+        except ValueError as e:
+            # Handle duplicate unique_id error
+            raise HTTPException(
+                status_code=409,
+                detail=f"Duplicate claims detected: {str(e)}"
+            )
         
-        # Store in database - use claims collection
-        result = await db.insert_many_claims(claims_data)
-        
-        return {
-            "message": "Claims uploaded successfully",
-            "claims_count": len(claims_data),
-            "tenant_id": tenant_id,
-            "inserted_ids": [str(id) for id in result.inserted_ids]
-        }
-        
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+        print(f"❌ Upload error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Upload failed: {str(e)}"
+        )
+
+
+
+# @app.post("/upload/claims")
+# async def upload_claims(
+#     file: UploadFile = File(...),
+#     tenant_id: str = Form("default"),
+#     current_user: str = Depends(verify_token)
+# ):
+#     """Upload and process claims file (CSV, XLS, XLSX)"""
+#     try:
+#         # Validate file type
+#         filename_lower = file.filename.lower()
+#         if not (filename_lower.endswith('.csv') or filename_lower.endswith('.xlsx') or filename_lower.endswith('.xls')):
+#             raise HTTPException(
+#                 status_code=400, 
+#                 detail="Only CSV, XLS, and XLSX files are supported"
+#             )
+        
+#         # Read file content
+#         content = await file.read()
+        
+#         # Validate file size (10MB limit)
+#         max_size = 10 * 1024 * 1024  # 10MB
+#         if len(content) > max_size:
+#             raise HTTPException(
+#                 status_code=400,
+#                 detail="File size exceeds 10MB limit"
+#             )
+        
+#         # Parse file based on type
+#         try:
+#             if filename_lower.endswith('.csv'):
+#                 df = pd.read_csv(BytesIO(content))
+#             elif filename_lower.endswith('.xlsx'):
+#                 df = pd.read_excel(BytesIO(content), engine='openpyxl')
+#             elif filename_lower.endswith('.xls'):
+#                 df = pd.read_excel(BytesIO(content), engine='xlrd')
+#         except Exception as e:
+#             raise HTTPException(
+#                 status_code=400,
+#                 detail=f"Error parsing file: {str(e)}"
+#             )
+        
+#         # Validate required columns
+#         required_columns = [
+#             'claim_id', 'encounter_type', 'service_date', 'national_id',
+#             'member_id', 'facility_id', 'unique_id', 'diagnosis_codes',
+#             'service_code', 'paid_amount_aed', 'approval_number'
+#         ]
+        
+#         missing_columns = [col for col in required_columns if col not in df.columns]
+#         if missing_columns:
+#             raise HTTPException(
+#                 status_code=400,
+#                 detail=f"Missing required columns: {', '.join(missing_columns)}"
+#             )
+        
+#         # Convert to records and store in master table
+#         claims_data = []
+#         for idx, row in df.iterrows():
+#             try:
+#                 # Handle diagnosis codes (semicolon or comma separated)
+#                 diagnosis_codes_str = str(row['diagnosis_codes']) if pd.notna(row['diagnosis_codes']) else ""
+#                 if diagnosis_codes_str:
+#                     # Replace semicolons with commas, then split
+#                     diagnosis_codes = [
+#                         code.strip() 
+#                         for code in diagnosis_codes_str.replace(';', ',').split(',') 
+#                         if code.strip()
+#                     ]
+#                 else:
+#                     diagnosis_codes = []
+                
+#                 # Handle approval number (normalize NA values)
+#                 approval_number = str(row['approval_number']) if pd.notna(row['approval_number']) else ""
+#                 if approval_number.upper() in ['NA', 'N/A', 'NAN', 'NONE', 'NULL']:
+#                     approval_number = ""
+                
+#                 claim = {
+#                     "claim_id": str(row['claim_id']),
+#                     "unique_id": str(row['unique_id']).strip(),
+#                     "encounter_type": str(row['encounter_type']).strip().upper(),
+#                     "service_date": str(row['service_date']),
+#                     "national_id": str(row['national_id']).strip(),
+#                     "member_id": str(row['member_id']).strip(),
+#                     "facility_id": str(row['facility_id']).strip(),
+#                     "diagnosis_codes": diagnosis_codes,
+#                     "service_code": str(row['service_code']).strip(),
+#                     "paid_amount_aed": float(row['paid_amount_aed']),
+#                     "approval_number": approval_number,
+#                     "tenant_id": tenant_id,
+#                     "uploaded_at": datetime.utcnow(),
+#                     "status": "Pending",
+#                     "error_type": "No error",
+#                     "error_explanation": [],
+#                     "recommended_action": ""
+#                 }
+#                 claims_data.append(claim)
+                
+#             except Exception as e:
+#                 print(f"⚠️ Error processing row {idx}: {str(e)}")
+#                 continue
+        
+#         if not claims_data:
+#             raise HTTPException(
+#                 status_code=400,
+#                 detail="No valid claims found in file"
+#             )
+        
+#         # Store in database
+#         try:
+#             result = await db.insert_many_claims(claims_data)
+            
+#             return {
+#                 "message": "Claims uploaded successfully",
+#                 "claims_count": len(claims_data),
+#                 "tenant_id": tenant_id,
+#                 "filename": file.filename,
+#                 "file_type": filename_lower.split('.')[-1].upper()
+#             }
+            
+#         except ValueError as e:
+#             # Handle duplicate unique_id error
+#             raise HTTPException(
+#                 status_code=409,
+#                 detail=f"Duplicate claims detected: {str(e)}"
+#             )
+        
+#     except HTTPException:
+#         raise
+#     except Exception as e:
+#         print(f"❌ Upload error: {str(e)}")
+#         import traceback
+#         traceback.print_exc()
+#         raise HTTPException(
+#             status_code=500, 
+#             detail=f"Upload failed: {str(e)}"
+#         )
+
 
 
 

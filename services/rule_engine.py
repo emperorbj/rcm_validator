@@ -301,7 +301,8 @@ class RuleEngine:
                 )
         
         return errors
-    
+    # services/rule_engine.py - REPLACE the _validate_id_formats method
+
     def _validate_id_formats(self, claim: ClaimRecord) -> List[str]:
         """Validate ID formatting rules"""
         errors = []
@@ -317,26 +318,33 @@ class RuleEngine:
             segments = claim.unique_id.split('-')
             
             # Check if segments correspond to source IDs
+            # Pattern: first4(National ID) – middle4(Member ID) – last4(Facility ID)
             national_segment = segments[0]
             member_segment = segments[1]
             facility_segment = segments[2]
             
-            if not claim.national_id.endswith(national_segment[-4:]):
+            # Extract last 4 characters from each ID
+            national_last4 = claim.national_id[-4:].upper() if len(claim.national_id) >= 4 else ""
+            member_last4 = claim.member_id[-4:].upper() if len(claim.member_id) >= 4 else ""
+            facility_last4 = claim.facility_id[-4:].upper() if len(claim.facility_id) >= 4 else ""
+            
+            # Compare segments with source IDs
+            if national_segment != national_last4:
                 errors.append(
-                    f"unique_id first segment '{national_segment}' should match last 4 chars of national_id"
+                    f"unique_id first segment '{national_segment}' does not match last 4 chars of national_id '{national_last4}'"
                 )
             
-            if not claim.member_id.endswith(member_segment[-4:]):
+            if member_segment != member_last4:
                 errors.append(
-                    f"unique_id middle segment '{member_segment}' should match last 4 chars of member_id"
+                    f"unique_id middle segment '{member_segment}' does not match last 4 chars of member_id '{member_last4}'"
                 )
             
-            if not claim.facility_id.endswith(facility_segment[-4:]):
+            if facility_segment != facility_last4:
                 errors.append(
-                    f"unique_id last segment '{facility_segment}' should match last 4 chars of facility_id"
+                    f"unique_id last segment '{facility_segment}' does not match last 4 chars of facility_id '{facility_last4}'"
                 )
         
-        # Check individual ID formats
+        # Check individual ID formats (must be uppercase alphanumeric)
         for id_field, id_value in [
             ("national_id", claim.national_id),
             ("member_id", claim.member_id),
@@ -349,6 +357,53 @@ class RuleEngine:
         
         return errors
     
+    # def _validate_id_formats(self, claim: ClaimRecord) -> List[str]:
+    #     """Validate ID formatting rules"""
+    #     errors = []
+    #     rules = self.technical_rules.id_format_rules
+        
+    #     # Check unique_id format
+    #     if not re.match(rules["pattern"], claim.unique_id):
+    #         errors.append(
+    #             f"unique_id '{claim.unique_id}' does not match required format: XXXX-XXXX-XXXX (uppercase alphanumeric)"
+    #         )
+    #     else:
+    #         # Validate segments match component IDs
+    #         segments = claim.unique_id.split('-')
+            
+    #         # Check if segments correspond to source IDs
+    #         national_segment = segments[0]
+    #         member_segment = segments[1]
+    #         facility_segment = segments[2]
+            
+    #         if not claim.national_id.endswith(national_segment[-4:]):
+    #             errors.append(
+    #                 f"unique_id first segment '{national_segment}' should match last 4 chars of national_id"
+    #             )
+            
+    #         if not claim.member_id.endswith(member_segment[-4:]):
+    #             errors.append(
+    #                 f"unique_id middle segment '{member_segment}' should match last 4 chars of member_id"
+    #             )
+            
+    #         if not claim.facility_id.endswith(facility_segment[-4:]):
+    #             errors.append(
+    #                 f"unique_id last segment '{facility_segment}' should match last 4 chars of facility_id"
+    #             )
+        
+    #     # Check individual ID formats
+    #     for id_field, id_value in [
+    #         ("national_id", claim.national_id),
+    #         ("member_id", claim.member_id),
+    #         ("facility_id", claim.facility_id)
+    #     ]:
+    #         if not all(c in rules["allowed_chars"] for c in id_value):
+    #             errors.append(
+    #                 f"{id_field} '{id_value}' contains invalid characters (must be uppercase alphanumeric)"
+    #             )
+        
+    #     return errors
+
     def _generate_recommended_action(
         self, 
         technical_errors: List[str], 

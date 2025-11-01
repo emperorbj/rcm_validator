@@ -274,34 +274,88 @@ CLAIM DETAILS:
         print("No operations to perform for claims update")
         return None
 
+
+        
+        # services/validation_service.py - REPLACE _dict_to_claim_record method
+# Replace the _dict_to_claim_record method in services/validation_service.py
+
     def _dict_to_claim_record(self, claim_dict: dict) -> ClaimRecord:
         """Convert a raw MongoDB claim document (dict) into a ClaimRecord model."""
         try:
-            # Use self. to call the method
-            unique_id = self._normalize_unique_id(claim_dict.get("unique_id", ""))
+            # ✅ FIX: Remove normalization since it's done at upload time
+            # Data from DB is already in correct format
+            unique_id = str(claim_dict.get("unique_id", ""))
             
             # Ensure diagnosis_codes is a list
             diagnosis_codes = claim_dict.get("diagnosis_codes", [])
             if isinstance(diagnosis_codes, str):
-                diagnosis_codes = [code.strip() for code in diagnosis_codes.split(',') if code.strip()]
+                # Handle both semicolon and comma separators (legacy data)
+                diagnosis_codes = [
+                    code.strip().upper()
+                    for code in diagnosis_codes.replace(';', ',').split(',') 
+                    if code.strip()
+                ]
+            
+            # Normalize approval_number (handle various "NA" representations)
+            approval_number = claim_dict.get("approval_number", "")
+            if approval_number and approval_number.upper() in ["NA", "N/A", "NONE", "NULL", "NAN"]:
+                approval_number = ""
             
             return ClaimRecord(
-                unique_id=str(claim_dict.get("unique_id")),
+                unique_id=unique_id,  # ✅ Already normalized in DB
                 encounter_type=claim_dict.get("encounter_type"),
                 service_date=claim_dict.get("service_date"),
-                national_id=claim_dict.get("national_id"),
-                member_id=claim_dict.get("member_id"),
-                facility_id=claim_dict.get("facility_id"),
-                diagnosis_codes=diagnosis_codes,
-                service_code=claim_dict.get("service_code"),
+                national_id=str(claim_dict.get("national_id", "")),  # ✅ Already uppercase in DB
+                member_id=str(claim_dict.get("member_id", "")),  # ✅ Already uppercase in DB
+                facility_id=str(claim_dict.get("facility_id", "")),  # ✅ Already uppercase in DB
+                diagnosis_codes=diagnosis_codes,  # ✅ Already uppercase in DB
+                service_code=claim_dict.get("service_code"),  # ✅ Already uppercase in DB
                 paid_amount_aed=float(claim_dict.get("paid_amount_aed", 0)),
-                approval_number=claim_dict.get("approval_number", "")
+                approval_number=approval_number
             )
         except Exception as e:
-            print(f"Error converting claim dict to ClaimRecord: {str(e)}")
+            print(f"❌ Error converting claim dict to ClaimRecord: {str(e)}")
             print(f"Claim dict: {claim_dict}")
             raise e
-        
+    # def _dict_to_claim_record(self, claim_dict: dict) -> ClaimRecord:
+    #     """Convert a raw MongoDB claim document (dict) into a ClaimRecord model."""
+    #     try:
+    #         # Normalize unique_id to proper format
+    #         raw_unique_id = str(claim_dict.get("unique_id", ""))
+    #         unique_id = self._normalize_unique_id(raw_unique_id)
+            
+    #         # Ensure diagnosis_codes is a list
+    #         diagnosis_codes = claim_dict.get("diagnosis_codes", [])
+    #         if isinstance(diagnosis_codes, str):
+    #             # Handle both semicolon and comma separators
+    #             diagnosis_codes = [
+    #                 code.strip() 
+    #                 for code in diagnosis_codes.replace(';', ',').split(',') 
+    #                 if code.strip()
+    #             ]
+            
+    #         # Normalize approval_number (handle various "NA" representations)
+    #         approval_number = claim_dict.get("approval_number", "")
+    #         if approval_number and approval_number.upper() in ["NA", "N/A", "NONE", "NULL"]:
+    #             approval_number = ""
+            
+    #         return ClaimRecord(
+    #             unique_id=unique_id,
+    #             encounter_type=claim_dict.get("encounter_type"),
+    #             service_date=claim_dict.get("service_date"),
+    #             national_id=str(claim_dict.get("national_id", "")).upper(),
+    #             member_id=str(claim_dict.get("member_id", "")).upper(),
+    #             facility_id=str(claim_dict.get("facility_id", "")).upper(),
+    #             diagnosis_codes=diagnosis_codes,
+    #             service_code=claim_dict.get("service_code"),
+    #             paid_amount_aed=float(claim_dict.get("paid_amount_aed", 0)),
+    #             approval_number=approval_number
+    #         )
+    #     except Exception as e:
+    #         print(f"Error converting claim dict to ClaimRecord: {str(e)}")
+    #         print(f"Claim dict: {claim_dict}")
+    #         raise e
+
     def _generate_validation_summary(self, validation_results: List[ValidationResult]) -> Dict[str, int]:
         """Generate summary statistics from validation results"""
         summary = {
