@@ -173,13 +173,16 @@ async def upload_rules(
 
 # Replace the /upload/claims endpoint in main.py with this version
 
+# main.py - REPLACE the upload_claims endpoint
+
 @app.post("/upload/claims")
 async def upload_claims(
     file: UploadFile = File(...),
     tenant_id: str = Form("default"),
+    skip_duplicates: bool = Form(True),  # New parameter to control duplicate behavior
     current_user: str = Depends(verify_token)
 ):
-    """Upload and process claims file (CSV, XLS, XLSX) - FIXED VERSION"""
+    """Upload and process claims file (CSV, XLS, XLSX)"""
     try:
         # Validate file type
         filename_lower = file.filename.lower()
@@ -228,41 +231,17 @@ async def upload_claims(
                 detail=f"Missing required columns: {', '.join(missing_columns)}"
             )
         
-        # ✅ FIX: Helper function to normalize unique_id
-        def normalize_unique_id(uid: str) -> str:
-            """Convert any format to XXXX-XXXX-XXXX uppercase"""
-            if not uid or pd.isna(uid):
-                return ""
-            
-            # Convert to string and uppercase
-            uid = str(uid).upper().replace('-', '').replace(' ', '')
-            
-            # Validate length
-            if len(uid) != 12:
-                raise ValueError(f"unique_id must be 12 characters, got {len(uid)}: {uid}")
-            
-            # Format as XXXX-XXXX-XXXX
-            return f"{uid[0:4]}-{uid[4:8]}-{uid[8:12]}"
-        
-        # Convert to records and store in master table
+        # Convert to records
         claims_data = []
         skipped_rows = []
         
         for idx, row in df.iterrows():
             try:
-                # ✅ FIX: Normalize unique_id BEFORE inserting
-                try:
-                    normalized_unique_id = normalize_unique_id(row['unique_id'])
-                except ValueError as e:
-                    skipped_rows.append(f"Row {idx + 2}: {str(e)}")
-                    continue
-                
                 # Handle diagnosis codes (semicolon or comma separated)
                 diagnosis_codes_str = str(row['diagnosis_codes']) if pd.notna(row['diagnosis_codes']) else ""
                 if diagnosis_codes_str:
-                    # Replace semicolons with commas, then split
                     diagnosis_codes = [
-                        code.strip().upper()  # ✅ FIX: Normalize to uppercase
+                        code.strip() 
                         for code in diagnosis_codes_str.replace(';', ',').split(',') 
                         if code.strip()
                     ]
@@ -274,19 +253,28 @@ async def upload_claims(
                 if approval_number.upper() in ['NA', 'N/A', 'NAN', 'NONE', 'NULL']:
                     approval_number = ""
                 
-                # ✅ FIX: Normalize all ID fields to uppercase
+                # Normalize unique_id (uppercase and add hyphens if needed)
+                raw_unique_id = str(row['unique_id']).strip().upper()
+                
+                # If it's exactly 12 chars with no hyphens, add them
+                if len(raw_unique_id.replace('-', '')) == 12:
+                    clean_id = raw_unique_id.replace('-', '')
+                    unique_id = f"{clean_id[0:4]}-{clean_id[4:8]}-{clean_id[8:12]}"
+                else:
+                    unique_id = raw_unique_id
+                
                 claim = {
-                    "claim_id": str(row['claim_id']).strip(),
-                    "unique_id": normalized_unique_id,  # ✅ Already normalized
+                    "claim_id": str(row['claim_id']),
+                    "unique_id": unique_id,
                     "encounter_type": str(row['encounter_type']).strip().upper(),
                     "service_date": str(row['service_date']),
-                    "national_id": str(row['national_id']).strip().upper(),  # ✅ Uppercase
-                    "member_id": str(row['member_id']).strip().upper(),  # ✅ Uppercase
-                    "facility_id": str(row['facility_id']).strip().upper(),  # ✅ Uppercase
-                    "diagnosis_codes": diagnosis_codes,  # ✅ Already uppercase
-                    "service_code": str(row['service_code']).strip().upper(),  # ✅ Uppercase
+                    "national_id": str(row['national_id']).strip().upper(),
+                    "member_id": str(row['member_id']).strip().upper(),
+                    "facility_id": str(row['facility_id']).strip().upper(),
+                    "diagnosis_codes": diagnosis_codes,
+                    "service_code": str(row['service_code']).strip(),
                     "paid_amount_aed": float(row['paid_amount_aed']),
-                    "approval_number": approval_number.strip().upper() if approval_number else "",  # ✅ Uppercase
+                    "approval_number": approval_number,
                     "tenant_id": tenant_id,
                     "uploaded_at": datetime.utcnow(),
                     "status": "Pending",
@@ -297,42 +285,69 @@ async def upload_claims(
                 claims_data.append(claim)
                 
             except Exception as e:
-                skipped_rows.append(f"Row {idx + 2}: {str(e)}")
+                skipped_rows.append({"row": idx + 2, "error": str(e)})
+                print(f"⚠️ Error processing row {idx + 2}: {str(e)}")
                 continue
         
         if not claims_data:
             raise HTTPException(
                 status_code=400,
-                detail=f"No valid claims found in file. Errors: {'; '.join(skipped_rows[:5])}"
+                detail="No valid claims found in file"
             )
         
-        # Store in database
-        try:
-            result = await db.insert_many_claims(claims_data)
-            
-            response_data = {
-                "message": "Claims uploaded successfully",
-                "claims_count": len(claims_data),
-                "tenant_id": tenant_id,
-                "filename": file.filename,
-                "file_type": filename_lower.split('.')[-1].upper()
-            }
-            
-            # Add warning if rows were skipped
-            if skipped_rows:
-                response_data["warnings"] = {
-                    "skipped_rows": len(skipped_rows),
-                    "errors": skipped_rows[:10]  # Show first 10 errors
-                }
-            
-            return response_data
-            
-        except ValueError as e:
-            # Handle duplicate unique_id error
-            raise HTTPException(
-                status_code=409,
-                detail=f"Duplicate claims detected: {str(e)}"
-            )
+        # Store in database with duplicate handling
+        inserted_count = 0
+        duplicate_count = 0
+        failed_claims = []
+        
+        if skip_duplicates:
+            # Insert one by one to skip duplicates
+            for claim in claims_data:
+                try:
+                    await db.database.claims_master.insert_one(claim)
+                    inserted_count += 1
+                except Exception as e:
+                    if "E11000" in str(e):  # Duplicate key error
+                        duplicate_count += 1
+                        print(f"⚠️ Skipping duplicate: {claim['unique_id']}")
+                    else:
+                        failed_claims.append({
+                            "unique_id": claim['unique_id'],
+                            "error": str(e)
+                        })
+        else:
+            # Try batch insert (will fail on first duplicate)
+            try:
+                result = await db.insert_many_claims(claims_data)
+                inserted_count = len(claims_data)
+            except ValueError as e:
+                # Extract info from error message
+                error_msg = str(e)
+                if "duplicate" in error_msg.lower():
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Duplicate claims detected. Use skip_duplicates=true to skip them. Error: {error_msg}"
+                    )
+                raise
+        
+        response_data = {
+            "message": "Claims upload completed",
+            "claims_count": len(claims_data),
+            "inserted_count": inserted_count,
+            "duplicate_count": duplicate_count,
+            "skipped_rows": len(skipped_rows),
+            "tenant_id": tenant_id,
+            "filename": file.filename,
+            "file_type": filename_lower.split('.')[-1].upper()
+        }
+        
+        # Add details if there were issues
+        if skipped_rows:
+            response_data["skipped_row_details"] = skipped_rows[:10]  # First 10 only
+        if failed_claims:
+            response_data["failed_claims"] = failed_claims[:10]
+        
+        return response_data
         
     except HTTPException:
         raise
@@ -345,8 +360,99 @@ async def upload_claims(
             detail=f"Upload failed: {str(e)}"
         )
 
+# main.py - ADD these new endpoints after the existing delete endpoint
+
+@app.delete("/claims/{tenant_id}/duplicates")
+async def remove_duplicates(
+    tenant_id: str,
+    current_user: str = Depends(verify_token)
+):
+    """Remove duplicate claims for a tenant (keeps most recent)"""
+    try:
+        # Aggregate to find duplicates
+        pipeline = [
+            {"$match": {"tenant_id": tenant_id}},
+            {
+                "$group": {
+                    "_id": "$unique_id",
+                    "count": {"$sum": 1},
+                    "docs": {"$push": "$_id"}
+                }
+            },
+            {"$match": {"count": {"$gt": 1}}}
+        ]
+        
+        cursor = db.database.claims_master.aggregate(pipeline)
+        duplicates = await cursor.to_list(length=None)
+        
+        deleted_count = 0
+        for dup in duplicates:
+            # Keep the first one, delete the rest
+            ids_to_delete = dup["docs"][1:]
+            result = await db.database.claims_master.delete_many({
+                "_id": {"$in": ids_to_delete}
+            })
+            deleted_count += result.deleted_count
+        
+        return {
+            "message": "Duplicates removed",
+            "tenant_id": tenant_id,
+            "duplicate_groups": len(duplicates),
+            "claims_deleted": deleted_count
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to remove duplicates: {str(e)}"
+        )
 
 
+@app.get("/claims/{tenant_id}/duplicates")
+async def check_duplicates(
+    tenant_id: str,
+    current_user: str = Depends(verify_token)
+):
+    """Check for duplicate claims in a tenant"""
+    try:
+        # Aggregate to find duplicates
+        pipeline = [
+            {"$match": {"tenant_id": tenant_id}},
+            {
+                "$group": {
+                    "_id": "$unique_id",
+                    "count": {"$sum": 1},
+                    "claim_ids": {"$push": "$claim_id"}
+                }
+            },
+            {"$match": {"count": {"$gt": 1}}},
+            {"$sort": {"count": -1}}
+        ]
+        
+        cursor = db.database.claims_master.aggregate(pipeline)
+        duplicates = await cursor.to_list(length=100)  # Limit to 100
+        
+        return {
+            "tenant_id": tenant_id,
+            "duplicate_count": len(duplicates),
+            "duplicates": duplicates
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to check duplicates: {str(e)}"
+        )
+        
+# Quick fix - Add this temporary endpoint to main.py
+@app.post("/debug/clear-claims/{tenant_id}")
+async def debug_clear_claims(tenant_id: str):
+    """DEBUG: Clear all claims for a tenant"""
+    result = await db.database.claims_master.delete_many({"tenant_id": tenant_id})
+    return {
+        "deleted": result.deleted_count,
+        "tenant_id": tenant_id
+    }
 # @app.post("/upload/claims")
 # async def upload_claims(
 #     file: UploadFile = File(...),
