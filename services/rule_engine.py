@@ -96,13 +96,14 @@ class RuleEngine:
                 "SRV2002",  # Flu Vaccine
                 "SRV2003",  # Routine Lab Panel
                 "SRV2004",  # X-Ray
+                "SRV2005",  # Urine Culture (FIXED - was missing)
                 "SRV2006",  # Pulmonary Function Test
                 "SRV2007",  # HbA1c Test
                 "SRV2008",  # Ultrasonogram – Pregnancy Check
                 "SRV2010",  # Outpatient Dialysis
                 "SRV2011",  # Cardiac Stress Test
             ]
-            
+
             # Facility registry
             facility_registry = {
                 "0DBYE6KP": "DIALYSIS_CENTER",
@@ -174,7 +175,9 @@ class RuleEngine:
             
         except Exception as e:
             raise ValueError(f"Failed to parse medical rules: {str(e)}")
-    
+        
+        # services/rule_engine.py - REPLACE validate_claim method
+
     def validate_claim(self, claim: ClaimRecord) -> ValidationResult:
         """Validate a single claim against all rules"""
         technical_errors = []
@@ -190,21 +193,29 @@ class RuleEngine:
             med_errors = self._validate_medical_rules(claim)
             medical_errors.extend(med_errors)
         
-        # Determine overall status and error type
+        # Combine all errors
         all_errors = technical_errors + medical_errors
         
-        if not all_errors:
+        # Determine status and error type
+        if not all_errors or len(all_errors) == 0:
+            # No errors found - claim is validated
             status = StatusType.VALIDATED
             error_type = ErrorType.NO_ERROR
-            recommended_action = "No action required"
+            recommended_action = "No action required - claim is valid"
         else:
+            # Errors found - claim is not validated
             status = StatusType.NOT_VALIDATED
+            
+            # Determine error type based on which lists have errors
             if technical_errors and medical_errors:
                 error_type = ErrorType.BOTH
             elif technical_errors:
                 error_type = ErrorType.TECHNICAL_ERROR
-            else:
+            elif medical_errors:
                 error_type = ErrorType.MEDICAL_ERROR
+            else:
+                # Fallback (should not reach here)
+                error_type = ErrorType.NO_ERROR
             
             recommended_action = self._generate_recommended_action(
                 technical_errors, medical_errors, claim
@@ -220,189 +231,217 @@ class RuleEngine:
             medical_errors=medical_errors
         )
     
+
+    # services/rule_engine.py - REPLACE _validate_technical_rules method
+
+# services/rule_engine.py - REPLACE _validate_technical_rules method
+# PRODUCTION: Strict approval validation
+
     def _validate_technical_rules(self, claim: ClaimRecord) -> List[str]:
-        """Validate technical rules for a claim"""
+        """Validate technical rules for a claim - STRICT PRODUCTION VERSION"""
         errors = []
         rules = self.technical_rules
+        
+        # Helper function to check if approval is valid
+        def has_valid_approval(approval_str: str) -> bool:
+            if not approval_str or approval_str.strip() == "":
+                return False
+            # Normalize and check against invalid values
+            normalized = approval_str.strip().upper()
+            invalid_values = ["NA", "N/A", "NONE", "NULL", "OBTAIN APPROVAL", "PENDING"]
+            return normalized not in invalid_values
+        
+        # Track all reasons approval is needed
+        approval_reasons = []
         
         # 1. Check service approval requirements
         if claim.service_code in rules.services_requiring_approval:
             if rules.services_requiring_approval[claim.service_code]:
-                if not claim.approval_number or claim.approval_number.strip() == "":
-                    errors.append(
-                        f"Service {claim.service_code} requires prior approval but no approval number provided"
-                    )
+                approval_reasons.append(f"service {claim.service_code}")
         
-        # 2. Check diagnosis approval requirements
+        # 2. Check diagnosis approval requirements  
         for diagnosis in claim.diagnosis_codes:
             if diagnosis in rules.diagnosis_requiring_approval:
                 if rules.diagnosis_requiring_approval[diagnosis]:
-                    if not claim.approval_number or claim.approval_number.strip() == "":
-                        errors.append(
-                            f"Diagnosis {diagnosis} requires prior approval but no approval number provided"
-                        )
+                    approval_reasons.append(f"diagnosis {diagnosis}")
         
         # 3. Check paid amount threshold
         if claim.paid_amount_aed > rules.paid_amount_threshold:
-            if not claim.approval_number or claim.approval_number.strip() == "":
-                errors.append(
-                    f"Paid amount AED {claim.paid_amount_aed} exceeds threshold of AED {rules.paid_amount_threshold}, prior approval required"
-                )
+            approval_reasons.append(f"paid amount AED {claim.paid_amount_aed:.2f} (exceeds threshold of AED {rules.paid_amount_threshold})")
         
-        # 4. Validate ID formatting
+        # If approval is required but not provided, add error for EACH reason
+        if approval_reasons:
+            if not has_valid_approval(claim.approval_number):
+                for reason in approval_reasons:
+                    errors.append(
+                        f"Technical Error: Prior approval required for {reason}, but no valid approval number provided (got: '{claim.approval_number or 'empty'}')"
+                    )
+        
+        # 4. Validate ID formatting (call separate method)
         id_errors = self._validate_id_formats(claim)
         errors.extend(id_errors)
         
         return errors
-    
+# services/rule_engine.py - REPLACE _validate_medical_rules method
+# PRODUCTION: Flag ALL medical errors
+
     def _validate_medical_rules(self, claim: ClaimRecord) -> List[str]:
-        """Validate medical rules for a claim"""
+        """Validate medical rules for a claim - STRICT PRODUCTION VERSION"""
         errors = []
         rules = self.medical_rules
         
-        # 1. Check encounter type constraints
+        # 1. Check encounter type constraints (CRITICAL)
         if claim.service_code in rules.inpatient_only_services:
             if claim.encounter_type != "INPATIENT":
                 errors.append(
-                    f"Service {claim.service_code} can only be performed for INPATIENT encounters"
+                    f"Medical Error: Service {claim.service_code} is INPATIENT-only but encounter type is {claim.encounter_type}"
                 )
         
         if claim.service_code in rules.outpatient_only_services:
             if claim.encounter_type != "OUTPATIENT":
                 errors.append(
-                    f"Service {claim.service_code} can only be performed for OUTPATIENT encounters"
+                    f"Medical Error: Service {claim.service_code} is OUTPATIENT-only but encounter type is {claim.encounter_type}"
                 )
         
         # 2. Check facility-service constraints
-        facility_type = rules.facility_registry.get(claim.facility_id)
+        facility_type = rules.facility_registry.get(claim.facility_id.upper())
+        if not facility_type:
+            # Try case-insensitive lookup
+            facility_type = next(
+                (v for k, v in rules.facility_registry.items() if k.upper() == claim.facility_id.upper()),
+                None
+            )
+        
         if facility_type:
             allowed_services = rules.facility_service_mapping.get(facility_type, [])
             if claim.service_code not in allowed_services:
                 errors.append(
-                    f"Service {claim.service_code} is not allowed at {facility_type} (facility {claim.facility_id})"
+                    f"Medical Error: Service {claim.service_code} is not authorized at {facility_type} facilities (Facility ID: {claim.facility_id})"
                 )
         else:
-            errors.append(f"Unknown facility ID: {claim.facility_id}")
+            errors.append(
+                f"Medical Error: Facility ID '{claim.facility_id}' is not registered in the system"
+            )
         
-        # 3. Check diagnosis-service requirements
+        # 3. Check diagnosis-service requirements (STRICT ENFORCEMENT)
+        # If a diagnosis is present that REQUIRES a specific service, that service MUST be provided
         for diagnosis in claim.diagnosis_codes:
             if diagnosis in rules.diagnosis_service_requirements:
                 required_services = rules.diagnosis_service_requirements[diagnosis]
                 if claim.service_code not in required_services:
+                    service_list = ", ".join(required_services)
                     errors.append(
-                        f"Diagnosis {diagnosis} requires one of these services: {required_services}, but got {claim.service_code}"
+                        f"Medical Error: Diagnosis {diagnosis} requires service {service_list}, but service {claim.service_code} was provided"
                     )
         
-        # 4. Check mutually exclusive diagnoses
+        # 4. Check mutually exclusive diagnoses (CRITICAL)
         for diag1, diag2 in rules.mutually_exclusive_diagnoses:
             if diag1 in claim.diagnosis_codes and diag2 in claim.diagnosis_codes:
                 errors.append(
-                    f"Mutually exclusive diagnoses found: {diag1} and {diag2} cannot coexist"
+                    f"Medical Error: Diagnoses {diag1} and {diag2} are mutually exclusive and cannot both be present on the same claim"
                 )
         
         return errors
-    # services/rule_engine.py - REPLACE the _validate_id_formats method
+    # services/rule_engine.py - REPLACE _validate_id_formats method
+# PRODUCTION VERSION: Only validate format, not segment matching
+
+    # services/rule_engine.py - REPLACE _validate_id_formats method
+# PRODUCTION: STRICT validation - flag ALL errors
 
     def _validate_id_formats(self, claim: ClaimRecord) -> List[str]:
-        """Validate ID formatting rules"""
+        """
+        Validate ID formatting rules - STRICT PRODUCTION VERSION
+        Flags ALL ID-related errors according to technical rules
+        """
         errors = []
         rules = self.technical_rules.id_format_rules
         
-        # Check unique_id format
+        # 1. Check unique_id format (XXXX-XXXX-XXXX pattern with uppercase alphanumeric)
         if not re.match(rules["pattern"], claim.unique_id):
             errors.append(
-                f"unique_id '{claim.unique_id}' does not match required format: XXXX-XXXX-XXXX (uppercase alphanumeric)"
+                f"Technical Error: unique_id '{claim.unique_id}' must follow format XXXX-XXXX-XXXX with uppercase alphanumeric characters only"
             )
-        else:
-            # Validate segments match component IDs
+        
+        # 2. Check for placeholder values (invalid)
+        if claim.unique_id.upper() in ["XXXX-YYYY-ZZZZ", "XXXX-XXXX-XXXX"]:
+            errors.append(
+                f"Technical Error: unique_id cannot be a placeholder value '{claim.unique_id}'"
+            )
+        
+        # 3. Validate segment structure if format is correct
+        if re.match(rules["pattern"], claim.unique_id):
             segments = claim.unique_id.split('-')
             
-            # Check if segments correspond to source IDs
-            # Pattern: first4(National ID) – middle4(Member ID) – last4(Facility ID)
-            national_segment = segments[0]
-            member_segment = segments[1]
-            facility_segment = segments[2]
+            # Normalize source IDs to uppercase for comparison
+            national_upper = claim.national_id.upper()
+            member_upper = claim.member_id.upper()
+            facility_upper = claim.facility_id.upper()
             
-            # Extract last 4 characters from each ID
-            national_last4 = claim.national_id[-4:].upper() if len(claim.national_id) >= 4 else ""
-            member_last4 = claim.member_id[-4:].upper() if len(claim.member_id) >= 4 else ""
-            facility_last4 = claim.facility_id[-4:].upper() if len(claim.facility_id) >= 4 else ""
+            # Extract expected segments based on rules:
+            # "first4(National ID) – middle4(Member ID) – last4(Facility ID)"
             
-            # Compare segments with source IDs
-            if national_segment != national_last4:
+            # First segment: first 4 chars of national_id
+            if len(national_upper) >= 4:
+                expected_first = national_upper[:4]
+                if segments[0] != expected_first:
+                    errors.append(
+                        f"Technical Error: unique_id first segment '{segments[0]}' must be first 4 characters of national_id (expected '{expected_first}')"
+                    )
+            else:
                 errors.append(
-                    f"unique_id first segment '{national_segment}' does not match last 4 chars of national_id '{national_last4}'"
+                    f"Technical Error: national_id '{claim.national_id}' must be at least 4 characters long"
                 )
             
-            if member_segment != member_last4:
+            # Middle segment: middle 4 chars of member_id (chars at positions 2-5 for 8-char ID)
+            if len(member_upper) >= 8:
+                # For 8-character member_id, middle 4 = positions 2-5 (0-indexed: [2:6])
+                expected_middle = member_upper[2:6]
+                if segments[1] != expected_middle:
+                    errors.append(
+                        f"Technical Error: unique_id middle segment '{segments[1]}' must be middle 4 characters of member_id (expected '{expected_middle}', positions 3-6)"
+                    )
+            elif len(member_upper) >= 4:
+                # If member_id < 8 chars, check if segment exists in member_id
+                if segments[1] not in member_upper:
+                    errors.append(
+                        f"Technical Error: unique_id middle segment '{segments[1]}' not found in member_id '{claim.member_id}'"
+                    )
+            else:
                 errors.append(
-                    f"unique_id middle segment '{member_segment}' does not match last 4 chars of member_id '{member_last4}'"
+                    f"Technical Error: member_id '{claim.member_id}' must be at least 4 characters long"
                 )
             
-            if facility_segment != facility_last4:
+            # Last segment: last 4 chars of facility_id
+            if len(facility_upper) >= 4:
+                expected_last = facility_upper[-4:]
+                if segments[2] != expected_last:
+                    errors.append(
+                        f"Technical Error: unique_id last segment '{segments[2]}' must be last 4 characters of facility_id (expected '{expected_last}')"
+                    )
+            else:
                 errors.append(
-                    f"unique_id last segment '{facility_segment}' does not match last 4 chars of facility_id '{facility_last4}'"
+                    f"Technical Error: facility_id '{claim.facility_id}' must be at least 4 characters long"
                 )
         
-        # Check individual ID formats (must be uppercase alphanumeric)
+        # 4. Validate individual ID formats (must be uppercase alphanumeric)
         for id_field, id_value in [
             ("national_id", claim.national_id),
             ("member_id", claim.member_id),
             ("facility_id", claim.facility_id)
         ]:
-            if not all(c in rules["allowed_chars"] for c in id_value):
+            # Check if contains only alphanumeric characters
+            if not id_value.replace('-', '').isalnum():
                 errors.append(
-                    f"{id_field} '{id_value}' contains invalid characters (must be uppercase alphanumeric)"
+                    f"Technical Error: {id_field} '{id_value}' contains invalid characters (must be alphanumeric only)"
+                )
+            
+            # Check if all uppercase (as per rules: "All IDs must be UPPERCASE")
+            if id_value != id_value.upper():
+                errors.append(
+                    f"Technical Error: {id_field} '{id_value}' must be UPPERCASE alphanumeric (found lowercase characters)"
                 )
         
         return errors
-    
-    # def _validate_id_formats(self, claim: ClaimRecord) -> List[str]:
-    #     """Validate ID formatting rules"""
-    #     errors = []
-    #     rules = self.technical_rules.id_format_rules
-        
-    #     # Check unique_id format
-    #     if not re.match(rules["pattern"], claim.unique_id):
-    #         errors.append(
-    #             f"unique_id '{claim.unique_id}' does not match required format: XXXX-XXXX-XXXX (uppercase alphanumeric)"
-    #         )
-    #     else:
-    #         # Validate segments match component IDs
-    #         segments = claim.unique_id.split('-')
-            
-    #         # Check if segments correspond to source IDs
-    #         national_segment = segments[0]
-    #         member_segment = segments[1]
-    #         facility_segment = segments[2]
-            
-    #         if not claim.national_id.endswith(national_segment[-4:]):
-    #             errors.append(
-    #                 f"unique_id first segment '{national_segment}' should match last 4 chars of national_id"
-    #             )
-            
-    #         if not claim.member_id.endswith(member_segment[-4:]):
-    #             errors.append(
-    #                 f"unique_id middle segment '{member_segment}' should match last 4 chars of member_id"
-    #             )
-            
-    #         if not claim.facility_id.endswith(facility_segment[-4:]):
-    #             errors.append(
-    #                 f"unique_id last segment '{facility_segment}' should match last 4 chars of facility_id"
-    #             )
-        
-    #     # Check individual ID formats
-    #     for id_field, id_value in [
-    #         ("national_id", claim.national_id),
-    #         ("member_id", claim.member_id),
-    #         ("facility_id", claim.facility_id)
-    #     ]:
-    #         if not all(c in rules["allowed_chars"] for c in id_value):
-    #             errors.append(
-    #                 f"{id_field} '{id_value}' contains invalid characters (must be uppercase alphanumeric)"
-    #             )
-        
-    #     return errors
 
     def _generate_recommended_action(
         self, 

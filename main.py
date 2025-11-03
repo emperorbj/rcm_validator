@@ -453,158 +453,20 @@ async def debug_clear_claims(tenant_id: str):
         "deleted": result.deleted_count,
         "tenant_id": tenant_id
     }
-# @app.post("/upload/claims")
-# async def upload_claims(
-#     file: UploadFile = File(...),
-#     tenant_id: str = Form("default"),
-#     current_user: str = Depends(verify_token)
-# ):
-#     """Upload and process claims file (CSV, XLS, XLSX)"""
-#     try:
-#         # Validate file type
-#         filename_lower = file.filename.lower()
-#         if not (filename_lower.endswith('.csv') or filename_lower.endswith('.xlsx') or filename_lower.endswith('.xls')):
-#             raise HTTPException(
-#                 status_code=400, 
-#                 detail="Only CSV, XLS, and XLSX files are supported"
-#             )
-        
-#         # Read file content
-#         content = await file.read()
-        
-#         # Validate file size (10MB limit)
-#         max_size = 10 * 1024 * 1024  # 10MB
-#         if len(content) > max_size:
-#             raise HTTPException(
-#                 status_code=400,
-#                 detail="File size exceeds 10MB limit"
-#             )
-        
-#         # Parse file based on type
-#         try:
-#             if filename_lower.endswith('.csv'):
-#                 df = pd.read_csv(BytesIO(content))
-#             elif filename_lower.endswith('.xlsx'):
-#                 df = pd.read_excel(BytesIO(content), engine='openpyxl')
-#             elif filename_lower.endswith('.xls'):
-#                 df = pd.read_excel(BytesIO(content), engine='xlrd')
-#         except Exception as e:
-#             raise HTTPException(
-#                 status_code=400,
-#                 detail=f"Error parsing file: {str(e)}"
-#             )
-        
-#         # Validate required columns
-#         required_columns = [
-#             'claim_id', 'encounter_type', 'service_date', 'national_id',
-#             'member_id', 'facility_id', 'unique_id', 'diagnosis_codes',
-#             'service_code', 'paid_amount_aed', 'approval_number'
-#         ]
-        
-#         missing_columns = [col for col in required_columns if col not in df.columns]
-#         if missing_columns:
-#             raise HTTPException(
-#                 status_code=400,
-#                 detail=f"Missing required columns: {', '.join(missing_columns)}"
-#             )
-        
-#         # Convert to records and store in master table
-#         claims_data = []
-#         for idx, row in df.iterrows():
-#             try:
-#                 # Handle diagnosis codes (semicolon or comma separated)
-#                 diagnosis_codes_str = str(row['diagnosis_codes']) if pd.notna(row['diagnosis_codes']) else ""
-#                 if diagnosis_codes_str:
-#                     # Replace semicolons with commas, then split
-#                     diagnosis_codes = [
-#                         code.strip() 
-#                         for code in diagnosis_codes_str.replace(';', ',').split(',') 
-#                         if code.strip()
-#                     ]
-#                 else:
-#                     diagnosis_codes = []
-                
-#                 # Handle approval number (normalize NA values)
-#                 approval_number = str(row['approval_number']) if pd.notna(row['approval_number']) else ""
-#                 if approval_number.upper() in ['NA', 'N/A', 'NAN', 'NONE', 'NULL']:
-#                     approval_number = ""
-                
-#                 claim = {
-#                     "claim_id": str(row['claim_id']),
-#                     "unique_id": str(row['unique_id']).strip(),
-#                     "encounter_type": str(row['encounter_type']).strip().upper(),
-#                     "service_date": str(row['service_date']),
-#                     "national_id": str(row['national_id']).strip(),
-#                     "member_id": str(row['member_id']).strip(),
-#                     "facility_id": str(row['facility_id']).strip(),
-#                     "diagnosis_codes": diagnosis_codes,
-#                     "service_code": str(row['service_code']).strip(),
-#                     "paid_amount_aed": float(row['paid_amount_aed']),
-#                     "approval_number": approval_number,
-#                     "tenant_id": tenant_id,
-#                     "uploaded_at": datetime.utcnow(),
-#                     "status": "Pending",
-#                     "error_type": "No error",
-#                     "error_explanation": [],
-#                     "recommended_action": ""
-#                 }
-#                 claims_data.append(claim)
-                
-#             except Exception as e:
-#                 print(f"⚠️ Error processing row {idx}: {str(e)}")
-#                 continue
-        
-#         if not claims_data:
-#             raise HTTPException(
-#                 status_code=400,
-#                 detail="No valid claims found in file"
-#             )
-        
-#         # Store in database
-#         try:
-#             result = await db.insert_many_claims(claims_data)
-            
-#             return {
-#                 "message": "Claims uploaded successfully",
-#                 "claims_count": len(claims_data),
-#                 "tenant_id": tenant_id,
-#                 "filename": file.filename,
-#                 "file_type": filename_lower.split('.')[-1].upper()
-#             }
-            
-#         except ValueError as e:
-#             # Handle duplicate unique_id error
-#             raise HTTPException(
-#                 status_code=409,
-#                 detail=f"Duplicate claims detected: {str(e)}"
-#             )
-        
-#     except HTTPException:
-#         raise
-#     except Exception as e:
-#         print(f"❌ Upload error: {str(e)}")
-#         import traceback
-#         traceback.print_exc()
-#         raise HTTPException(
-#             status_code=500, 
-#             detail=f"Upload failed: {str(e)}"
-#         )
-
-
-
-
-
+    
+    
+# main.py - REPLACE /validate endpoint
 
 @app.post("/validate")
 async def validate_claims(
-    tenant_id: str = Query("default", description="Tenant ID for validation"),  # Make it required
+    tenant_id: str = Query(..., description="Tenant ID for validation"),
     current_user: str = Depends(verify_token)
 ):
-    """Run validation pipeline on uploaded claims"""
+    """Run validation pipeline on uploaded claims with accurate error reporting"""
     try:
         print(f"Validating claims for tenant: {tenant_id}")
         
-        # Validate tenant_id is not empty
+        # Validate tenant_id
         if not tenant_id or tenant_id.strip() == "":
             raise HTTPException(
                 status_code=400,
@@ -619,7 +481,7 @@ async def validate_claims(
                 detail=f"No rules configuration found for tenant: {tenant_id}"
             )
             
-        print(f"Rules config found for tenant {tenant_id}") # Debug log
+        print(f"Rules config found for tenant {tenant_id}")
         
         # Run validation pipeline
         validation_results = await validation_service.validate_tenant_claims(
@@ -629,22 +491,126 @@ async def validate_claims(
         # Generate analytics
         analytics_results = await analytics_service.generate_analytics(tenant_id)
         
+        # Extract error summary from analytics
+        error_summary = analytics_results.get("error_summary", {})
+        
         return {
             "message": "Validation completed successfully",
             "tenant_id": tenant_id,
             "total_claims": validation_results["total_claims"],
             "validated_claims": validation_results["validated_claims"],
             "error_claims": validation_results["error_claims"],
+            "processing_time": validation_results["processing_time"],
+            "error_breakdown": {
+                "technical_only": error_summary.get("technical_only", 0),
+                "medical_only": error_summary.get("medical_only", 0),
+                "both_errors": error_summary.get("both_errors", 0),
+                "no_errors": error_summary.get("no_errors", 0),
+                "total_errors": error_summary.get("total_errors", 0)
+            },
+            "summary": validation_results.get("summary", {}),
             "analytics": analytics_results
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"Validation error: {str(e)}")  # Debug log
+        print(f"Validation error: {str(e)}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Validation failed: {str(e)}")
 
 
+
+
+
+
+# @app.post("/validate")
+# async def validate_claims(
+#     tenant_id: str = Query("default", description="Tenant ID for validation"),  # Make it required
+#     current_user: str = Depends(verify_token)
+# ):
+#     """Run validation pipeline on uploaded claims"""
+#     try:
+#         print(f"Validating claims for tenant: {tenant_id}")
+        
+#         # Validate tenant_id is not empty
+#         if not tenant_id or tenant_id.strip() == "":
+#             raise HTTPException(
+#                 status_code=400,
+#                 detail="tenant_id parameter is required and cannot be empty"
+#             )
+        
+#         # Get tenant rules configuration
+#         rules_config = await db.get_rules_config(tenant_id)
+#         if not rules_config:
+#             raise HTTPException(
+#                 status_code=404,
+#                 detail=f"No rules configuration found for tenant: {tenant_id}"
+#             )
+            
+#         print(f"Rules config found for tenant {tenant_id}") # Debug log
+        
+#         # Run validation pipeline
+#         validation_results = await validation_service.validate_tenant_claims(
+#             tenant_id, rules_config
+#         )
+        
+#         # Generate analytics
+#         analytics_results = await analytics_service.generate_analytics(tenant_id)
+        
+#         return {
+#             "message": "Validation completed successfully",
+#             "tenant_id": tenant_id,
+#             "total_claims": validation_results["total_claims"],
+#             "validated_claims": validation_results["validated_claims"],
+#             "error_claims": validation_results["error_claims"],
+#             "analytics": analytics_results
+#         }
+        
+#     except Exception as e:
+#         print(f"Validation error: {str(e)}")  # Debug log
+#         import traceback
+#         traceback.print_exc()
+#         raise HTTPException(status_code=500, detail=f"Validation failed: {str(e)}")
+
+# main.py - ADD this debug endpoint temporarily
+
+@app.get("/debug/claims/{tenant_id}")
+async def debug_claims(
+    tenant_id: str,
+    current_user: str = Depends(verify_token)
+):
+    """Debug endpoint to see validation errors for each claim"""
+    try:
+        claims = await db.get_claims_by_tenant(tenant_id, skip=0, limit=100)
+        
+        debug_info = []
+        for claim in claims:
+            debug_info.append({
+                "claim_id": claim.get("claim_id"),
+                "unique_id": claim.get("unique_id"),
+                "status": claim.get("status"),
+                "error_type": claim.get("error_type"),
+                "errors": claim.get("error_explanation", []),
+                "national_id": claim.get("national_id"),
+                "member_id": claim.get("member_id"),
+                "facility_id": claim.get("facility_id"),
+                "encounter_type": claim.get("encounter_type"),
+                "service_code": claim.get("service_code"),
+                "diagnosis_codes": claim.get("diagnosis_codes"),
+                "paid_amount": claim.get("paid_amount_aed"),
+                "approval_number": claim.get("approval_number")
+            })
+        
+        return {
+            "tenant_id": tenant_id,
+            "total_claims": len(claims),
+            "claims": debug_info
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/results/{tenant_id}")
